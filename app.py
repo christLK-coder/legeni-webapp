@@ -1,14 +1,14 @@
-"""Application fil rouge du cours DevOps B3.
+﻿"""Application fil rouge du cours DevOps B3.
 
-Petite application Flask utilisée dans tous les TPs (Docker, Jenkins,
+Petite application Flask utilisÃ©e dans tous les TPs (Docker, Jenkins,
 Kubernetes, Ansible) et dans le projet CI/CD final.
 
 Variables d'environnement :
-    APP_VERSION  version affichée (injectée au build ou au déploiement)
+    APP_VERSION  version affichÃ©e (injectÃ©e au build ou au dÃ©ploiement)
     APP_ENV      environnement (dev, staging, prod)
-    APP_COLOR    couleur de la bannière (pratique pour visualiser un rolling update)
-    REDIS_HOST   si défini, le compteur de visites est stocké dans Redis
-    REDIS_PORT   port Redis (6379 par défaut)
+    APP_COLOR    couleur de la banniÃ¨re (pratique pour visualiser un rolling update)
+    REDIS_HOST   si dÃ©fini, le compteur de visites est stockÃ© dans Redis
+    REDIS_PORT   port Redis (6379 par dÃ©faut)
     REDIS_PASSWORD  mot de passe Redis (optionnel)
 """
 import os
@@ -44,7 +44,7 @@ PAGE = """<!doctype html>
 
 
 class MemoryCounter:
-    """Compteur en mémoire : perdu au redémarrage, non partagé entre réplicas."""
+    """Compteur en mÃ©moire : perdu au redÃ©marrage, non partagÃ© entre rÃ©plicas."""
 
     name = "memoire"
 
@@ -60,12 +60,12 @@ class MemoryCounter:
 
 
 class RedisCounter:
-    """Compteur partagé stocké dans Redis."""
+    """Compteur partagÃ© stockÃ© dans Redis."""
 
     name = "redis"
 
     def __init__(self, host, port, password=None):
-        import redis  # import local : Redis n'est requis que s'il est utilisé
+        import redis  # import local : Redis n'est requis que s'il est utilisÃ©
 
         self.client = redis.Redis(host=host, port=port, password=password, socket_timeout=2)
 
@@ -120,12 +120,12 @@ def create_app(counter=None):
 
     @app.route("/health")
     def health():
-        # Liveness : le processus répond.
-        return jsonify(status="ok")
+        # Liveness : le processus rÃ©pond.
+        return jsonify(status="ko")
 
     @app.route("/ready")
     def ready():
-        # Readiness : les dépendances (Redis) sont joignables.
+        # Readiness : les dÃ©pendances (Redis) sont joignables.
         if app.config["COUNTER"].ping():
             return jsonify(status="ready")
         return jsonify(status="redis indisponible"), 503
