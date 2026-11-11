@@ -19,7 +19,7 @@ pipeline {
                     agent {
                         docker {
                             image 'python:3.12-slim'
-                            args '-e HOME=/tmp'
+                            args '-e HOME=/tmp -v pip_cache:/tmp/.cache/pip'
                             reuseNode true
                         }
                     }
