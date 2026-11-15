@@ -85,10 +85,13 @@ pipeline {
 
     post {
         success {
-            echo "OK ${env.JOB_NAME} #${env.BUILD_NUMBER} : version ${VERSION} déployée"
+            echo "OK ${env.JOB_NAME} #${env.BUILD_NUMBER} : version ${VERSION} deployee"
         }
         failure {
             echo "ECHEC ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+            withCredentials([string(credentialsId: 'webhook-discord', variable: 'HOOK')]) {
+                sh 'curl -s -H "Content-Type: application/json" -d "{\\"content\\": \\"ECHEC $JOB_NAME #$BUILD_NUMBER - $BUILD_URL\\"}" "$HOOK"'
+            }
         }
     }
 }
