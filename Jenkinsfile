@@ -1,42 +1,143 @@
-// TP 3.8 : integration continue + deploiement continu (staging automatique, prod apres validation)
+// Pipeline final : qualité (en parallèle) -> build -> scan Trivy -> push (main) -> staging -> validation -> production
 pipeline {
     agent any
 
     environment {
-        IMAGE   = "legeni-webapp"
-        VERSION = "1.0.${env.BUILD_NUMBER}"
-        COMPOSE = "docker compose -f deploy/docker-compose.deploy.yml"
+        IMAGE = 'christlk/legeni-webapp'
     }
 
     options {
         timestamps()
-        timeout(time: 30, unit: 'MINUTES')
-        disableConcurrentBuilds()          // jamais deux deploiements en meme temps
+        timeout(time: 45, unit: 'MINUTES')
+        disableConcurrentBuilds()          // jamais deux déploiements en même temps
+        buildDiscarder(logRotator(numToKeepStr: '15'))
     }
 
     stages {
-        stage('Tests unitaires') {
+        stage('Préparation') {
             steps {
-                sh 'docker build --target test -t $IMAGE:test .'
+                script {
+                    env.BASE_VERSION = readFile('VERSION').trim()
+                    env.TAG = "${env.BASE_VERSION}-${env.BUILD_NUMBER}"
+                    currentBuild.displayName = "#${env.BUILD_NUMBER} (${env.TAG})"
+                }
+                echo "Version ${env.TAG} sur la branche ${env.BRANCH_NAME}"
+            }
+        }
+
+        stage('Qualité') {
+            failFast true
+            parallel {
+                stage('Tests unitaires') {
+                    agent {
+                        docker {
+                            image 'python:3.12-slim'
+                            args '-e HOME=/tmp -v pip_cache:/tmp/.cache/pip'
+                            reuseNode true
+                        }
+                    }
+                    steps {
+                        sh '''
+                            python -m venv /tmp/venv
+                            /tmp/venv/bin/pip install -q --default-timeout=120 --retries 5 -r requirements.txt -r requirements-dev.txt
+                            mkdir -p reports
+                            /tmp/venv/bin/pytest --junitxml=reports/junit.xml \
+                                --cov=app --cov-report=xml:reports/coverage.xml --cov-fail-under=80
+                        '''
+                    }
+                    post {
+                        always {
+                            junit 'reports/junit.xml'
+                            recordCoverage(tools: [[parser: 'COBERTURA', pattern: 'reports/coverage.xml']])
+                        }
+                    }
+                }
+                stage('Lint Python') {
+                    agent {
+                        docker {
+                            image 'python:3.12-slim'
+                            args '-e HOME=/tmp'
+                            reuseNode true
+                        }
+                    }
+                    steps {
+                        sh '''
+                            python -m venv /tmp/venv
+                            /tmp/venv/bin/pip install -q --default-timeout=120 --retries 5 flake8==7.1.1
+                            mkdir -p reports
+                            /tmp/venv/bin/flake8 --output-file=reports/flake8.txt --tee .
+                        '''
+                    }
+                    post {
+                        always {
+                            recordIssues(tools: [flake8(pattern: 'reports/flake8.txt')])
+                        }
+                    }
+                }
+                stage('Lint Dockerfile') {
+                    steps {
+                        sh 'docker run --rm -i hadolint/hadolint:v2.12.0 < Dockerfile'
+                    }
+                }
+                stage('Syntaxe Ansible') {
+                    steps {
+                        withCredentials([file(credentialsId: 'ansible-vault-pass', variable: 'VAULT_FILE')]) {
+                            dir('ansible') {
+                                sh '''
+                                    export ANSIBLE_CONFIG="$PWD/ansible.cfg"
+                                    ansible-playbook deploy.yml --syntax-check -e app_version=0.0.0 --vault-password-file "$VAULT_FILE"
+                                '''
+                            }
+                        }
+                    }
+                }
             }
         }
 
         stage('Build image') {
             steps {
-                sh 'docker build --build-arg APP_VERSION=$VERSION -t $IMAGE:$VERSION .'
+                sh 'docker build --build-arg APP_VERSION=$TAG -t $IMAGE:$TAG .'
+            }
+        }
+
+        stage('Scan de sécurité') {
+            steps {
+                // --exit-code 1 : échec si une vulnérabilité CRITICAL corrigeable est trouvée
+                sh '''
+                    docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v trivy_cache:/root/.cache \
+                        aquasec/trivy:0.57.1 image --severity CRITICAL --ignore-unfixed --exit-code 1 $IMAGE:$TAG
+                '''
+            }
+        }
+
+        stage('Push Docker Hub') {
+            when { branch 'main' }
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub',
+                                                  usernameVariable: 'DH_USER',
+                                                  passwordVariable: 'DH_TOKEN')]) {
+                    sh '''
+                        echo "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
+                        docker push $IMAGE:$TAG
+                        docker logout
+                    '''
+                }
             }
         }
 
         stage('Déploiement staging') {
-            environment {
-                REDIS_PASSWORD = credentials('redis-password-staging')
-            }
+            when { branch 'main' }
             steps {
-                sh '''
-                    IMAGE_REF=$IMAGE:$VERSION APP_ENV=staging APP_COLOR='#bf8700' PORT=8081 \
-                        $COMPOSE -p legeni-staging up -d --wait
-                '''
-                sh './deploy/smoke-test.sh legeni-staging $VERSION'
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG'),
+                                 file(credentialsId: 'ansible-vault-pass', variable: 'VAULT_FILE')]) {
+                    dir('ansible') {
+                        sh '''
+                            export ANSIBLE_CONFIG="$PWD/ansible.cfg"
+                            ansible-playbook deploy.yml -e target_env=staging -e app_version=$TAG -e app_image=$IMAGE \
+                                --vault-password-file "$VAULT_FILE"
+                        '''
+                    }
+                }
             }
         }
 
@@ -44,39 +145,22 @@ pipeline {
             when { branch 'main' }
             steps {
                 timeout(time: 15, unit: 'MINUTES') {
-                    input message: "Déployer la version ${VERSION} en production ?", ok: 'Déployer'
+                    input message: "Déployer la version ${env.TAG} en production ?", ok: 'Déployer'
                 }
             }
         }
 
         stage('Déploiement production') {
             when { branch 'main' }
-            environment {
-                REDIS_PASSWORD = credentials('redis-password-prod')
-            }
             steps {
-                script {
-                    // Image actuellement en production : servira au rollback
-                    env.PREVIOUS_IMAGE = sh(
-                        script: "docker inspect -f '{{.Config.Image}}' legeni-prod-web-1 2>/dev/null || echo none",
-                        returnStdout: true
-                    ).trim()
-                    echo "Version en production avant déploiement : ${env.PREVIOUS_IMAGE}"
-                    try {
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG'),
+                                 file(credentialsId: 'ansible-vault-pass', variable: 'VAULT_FILE')]) {
+                    dir('ansible') {
                         sh '''
-                            IMAGE_REF=$IMAGE:$VERSION APP_ENV=prod APP_COLOR='#2da44e' PORT=8082 \
-                                $COMPOSE -p legeni-prod up -d --wait
-                            ./deploy/smoke-test.sh legeni-prod $VERSION
+                            export ANSIBLE_CONFIG="$PWD/ansible.cfg"
+                            ansible-playbook deploy.yml -e target_env=prod -e app_version=$TAG -e app_image=$IMAGE \
+                                --vault-password-file "$VAULT_FILE"
                         '''
-                    } catch (err) {
-                        if (env.PREVIOUS_IMAGE != 'none') {
-                            echo "Smoke test KO : retour à ${env.PREVIOUS_IMAGE}"
-                            sh '''
-                                IMAGE_REF=$PREVIOUS_IMAGE APP_ENV=prod APP_COLOR='#2da44e' PORT=8082 \
-                                    $COMPOSE -p legeni-prod up -d --wait
-                            '''
-                        }
-                        error "Déploiement production échoué, rollback effectué"
                     }
                 }
             }
@@ -85,13 +169,16 @@ pipeline {
 
     post {
         success {
-            echo "OK ${env.JOB_NAME} #${env.BUILD_NUMBER} : version ${VERSION} deployee"
+            echo "OK ${env.JOB_NAME} #${env.BUILD_NUMBER} : version ${env.TAG}"
         }
         failure {
             echo "ECHEC ${env.JOB_NAME} #${env.BUILD_NUMBER}"
             withCredentials([string(credentialsId: 'webhook-discord', variable: 'HOOK')]) {
                 sh 'curl -s -H "Content-Type: application/json" -d "{\\"content\\": \\"ECHEC $JOB_NAME #$BUILD_NUMBER - $BUILD_URL\\"}" "$HOOK"'
             }
+        }
+        cleanup {
+            cleanWs()
         }
     }
 }
