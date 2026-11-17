@@ -14,6 +14,11 @@
     target_env: staging
     app_image: christlk/legeni-webapp
     app_version: ""
+    new_pods: >-
+      {{ pods.resources | selectattr('metadata.deletionTimestamp', 'undefined')
+      | selectattr('status.phase', 'equalto', 'Running')
+      | selectattr('spec.containers.0.image', 'equalto', app_image ~ ':' ~ app_version)
+      | map(attribute='metadata.name') | list }}
 
   pre_tasks:
     - name: Vérifier les paramètres
@@ -61,10 +66,19 @@
             wait: true
             wait_timeout: 180
 
+        - name: Attendre un pod de la nouvelle version
+          kubernetes.core.k8s_info:
+            kind: Pod
+            namespace: "{{ k8s_namespace }}"
+            label_selectors: ["app=webapp"]
+          register: pods
+          until: new_pods | length > 0
+          retries: 10
+          delay: 3
         - name: Smoke test depuis le cluster
           kubernetes.core.k8s_exec:
             namespace: "{{ k8s_namespace }}"
-            pod: "{{ lookup('kubernetes.core.k8s', kind='Pod', namespace=k8s_namespace, label_selector='app=webapp')[0].metadata.name }}"
+            pod: "{{ new_pods | first }}"
             command: >-
               python -c "import json,urllib.request;
               d=json.load(urllib.request.urlopen('http://webapp/api/info'));
