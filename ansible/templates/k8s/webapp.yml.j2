@@ -93,7 +93,7 @@ spec:
             - configMapRef: {name: webapp-config}
             - secretRef: {name: redis-secret}
           readinessProbe:
-            httpGet: {path: /pret, port: 5000}
+            httpGet: {path: /ready, port: 5000}
             periodSeconds: 5
             failureThreshold: 2
           livenessProbe:
