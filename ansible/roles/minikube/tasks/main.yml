@@ -1,0 +1,59 @@
+---
+- name: Installer acl (nécessaire pour devenir un utilisateur non-root)
+  ansible.builtin.apt:
+    name: acl
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Lire le répertoire personnel de l'utilisateur
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ minikube_user }}"
+
+- name: Installer le binaire minikube
+  ansible.builtin.get_url:
+    url: "{{ minikube_url }}"
+    dest: /usr/local/bin/minikube
+    mode: "0755"
+
+- name: Lire l'état du cluster Minikube
+  ansible.builtin.command: minikube status
+  become_user: "{{ minikube_user }}"
+  environment:
+    HOME: "{{ getent_passwd[minikube_user][4] }}"
+  register: minikube_status
+  failed_when: false
+  changed_when: false
+
+- name: Démarrer Minikube (driver docker)
+  ansible.builtin.command: >-
+    minikube start --driver={{ minikube_driver }}
+    --cpus={{ minikube_cpus }} --memory={{ minikube_memory }}
+  become_user: "{{ minikube_user }}"
+  environment:
+    HOME: "{{ getent_passwd[minikube_user][4] }}"
+  when: minikube_status.rc != 0
+
+- name: Lister les addons Minikube
+  ansible.builtin.command: minikube addons list --output json
+  become_user: "{{ minikube_user }}"
+  environment:
+    HOME: "{{ getent_passwd[minikube_user][4] }}"
+  register: minikube_addons_list
+  changed_when: false
+
+- name: Activer les addons manquants
+  ansible.builtin.command: "minikube addons enable {{ item }}"
+  become_user: "{{ minikube_user }}"
+  environment:
+    HOME: "{{ getent_passwd[minikube_user][4] }}"
+  loop: "{{ minikube_addons }}"
+  when: (minikube_addons_list.stdout | from_json)[item]['Status'] != 'enabled'
+
+- name: Vérifier que le cluster est opérationnel
+  ansible.builtin.command: minikube status
+  become_user: "{{ minikube_user }}"
+  environment:
+    HOME: "{{ getent_passwd[minikube_user][4] }}"
+  changed_when: false

@@ -1,0 +1,48 @@
+---
+# Provisionne une machine Ubuntu/Debian vierge : Docker, Jenkins (image du TP 3.1) et Minikube.
+#
+#   ansible-galaxy collection install -r requirements.yml
+#   ansible-playbook provision.yml --ask-become-pass
+#   ansible-playbook provision.yml -e provision_user=ubuntu     # si l'utilisateur n'est pas détecté
+#
+# La machine cible se déclare dans le groupe [provision] de inventory.ini.
+# Le playbook est idempotent : une 2e exécution ne doit rien changer.
+- name: Provisionnement de l'infrastructure CI/CD
+  hosts: provision
+  become: true
+
+  vars:
+    # Utilisateur non-root qui utilisera Docker et Minikube (Minikube refuse de tourner en root)
+    provision_user: "{{ ansible_user | default(ansible_env.SUDO_USER | default('')) }}"
+    docker_users:
+      - "{{ provision_user }}"
+
+  pre_tasks:
+    - name: Vérifier la machine cible et l'utilisateur
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['os_family'] == 'Debian'
+          - provision_user | length > 0
+          - provision_user != 'root'
+        fail_msg: >-
+          Cible Debian/Ubuntu requise, et provision_user doit être un utilisateur non-root
+          (ex. -e provision_user=ubuntu)
+
+  roles:
+    - role: docker
+    - role: jenkins
+    - role: minikube
+
+  post_tasks:
+    - name: Inspecter le conteneur Jenkins
+      ansible.builtin.command: "docker inspect {{ jenkins_container_name }}"
+      register: jenkins_inspect
+      changed_when: false
+
+    - name: Relier Jenkins au réseau de Minikube (accès à l'API Kubernetes)
+      ansible.builtin.command: "docker network connect minikube {{ jenkins_container_name }}"
+      when: "'minikube' not in (jenkins_inspect.stdout | from_json)[0].NetworkSettings.Networks"
+
+    - name: Afficher l'URL de Jenkins
+      ansible.builtin.debug:
+        msg: "Jenkins : http://{{ ansible_host | default(inventory_hostname) }}:{{ jenkins_http_port }}"
