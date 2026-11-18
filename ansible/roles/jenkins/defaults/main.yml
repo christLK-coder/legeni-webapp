@@ -1,0 +1,6 @@
+---
+jenkins_dir: /opt/jenkins
+jenkins_image: legeni/jenkins:lts
+jenkins_container_name: jenkins
+jenkins_http_port: 8080
+jenkins_agent_port: 50000

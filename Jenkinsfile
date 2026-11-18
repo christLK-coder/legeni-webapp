@@ -86,6 +86,7 @@ pipeline {
                                 sh '''
                                     export ANSIBLE_CONFIG="$PWD/ansible.cfg"
                                     ansible-playbook deploy.yml --syntax-check -e app_version=0.0.0 --vault-password-file "$VAULT_FILE"
+                                    ansible-playbook provision.yml --syntax-check
                                 '''
                             }
                         }

@@ -1,0 +1,11 @@
+---
+minikube_user: "{{ provision_user }}"
+minikube_version: latest
+minikube_arch: "{{ 'amd64' if ansible_facts['architecture'] == 'x86_64' else 'arm64' }}"
+minikube_url: "https://storage.googleapis.com/minikube/releases/{{ minikube_version }}/minikube-linux-{{ minikube_arch }}"
+minikube_driver: docker
+minikube_cpus: 2
+minikube_memory: 4096
+minikube_addons:
+  - metrics-server
+  - ingress
